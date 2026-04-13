@@ -27,12 +27,15 @@ built and validated in production trading environments.
 ---
 
 ## Architecture
+
+```
 quant-desk-toolkit/
 ├── xva-engine/          # Core: XVA pricing and exposure simulation
 ├── rates-analytics/     # Supporting: Curve construction and instrument pricing
 ├── regulatory-capital/  # Regulatory: SA-CCR and RWA
 ├── common-utils/        # Shared: Numerical methods and market data I/O
 └── tests/               # Unit tests for core pricing logic
+```
 
 ---
 
