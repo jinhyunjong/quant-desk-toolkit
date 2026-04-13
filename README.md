@@ -1,21 +1,29 @@
 # Quant Desk Toolkit
 
-A collection of practical quantitative finance tools for pricing, risk, and exposure analytics used in trading environments.
+A professional-grade Python library for XVA pricing, counterparty credit risk 
+modeling, and regulatory capital computation — built to reflect the analytical 
+frameworks used on derivatives trading desks.
 
-## Projects
+---
 
-### Rates Analytics Engine
-Implements core fixed income analytics including yield curve construction, bond pricing, interest rate swap valuation, and DV01 sensitivity analysis.
+## Overview
 
-### XVA Exposure Engine
-Monte Carlo–based framework for simulating counterparty exposure (EPE/PFE) and computing Credit Valuation Adjustment (CVA).
+This toolkit implements the core quantitative models underlying modern 
+counterparty risk management and valuation adjustment pricing. It covers 
+three interconnected domains:
 
-### Common Utils
-Shared utility functions for numerical methods, discounting, and statistical calculations.
+- **XVA Pricing** — CVA, DVA, and FVA computed from simulated exposure 
+  profiles and market-implied credit/funding curves
+- **Counterparty Exposure** — Monte Carlo simulation of Expected Exposure 
+  (EE), Expected Positive Exposure (EPE), and Potential Future Exposure 
+  (PFE) across netting sets, with and without collateral
+- **Regulatory Capital** — SA-CCR exposure-at-default (EAD) and 
+  risk-weighted asset (RWA) calculations under Basel III
 
-## Tech Stack
-- Python (NumPy, Pandas)
-- Jupyter Notebooks
+The implementation prioritizes numerical accuracy, modularity, and 
+transparency of methodology — consistent with how these models are 
+built and validated in production trading environments.
 
-## Objective
-Designed to demonstrate practical implementation of pricing and risk tools used on trading desks.
+---
+
+## Architecture
