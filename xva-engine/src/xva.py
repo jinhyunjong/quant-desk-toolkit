@@ -8,6 +8,7 @@ Computes the three primary valuation adjustments on a netting set:
     CVA  — Credit Valuation Adjustment
     DVA  — Debt Valuation Adjustment
     FVA  — Funding Valuation Adjustment
+    MVA  — Margin Valuation Adjustment
 
 Theory
 ------
@@ -43,6 +44,23 @@ FVA (symmetric funding adjustment):
     where s_f = funding spread = unsecured borrowing rate - OIS rate.
     The FVA formula here follows Hull & White (2012) symmetric convention.
     Industry practice varies: some desks compute FCA only (conservative).
+
+MVA (Margin Valuation Adjustment):
+    MVA = s_f * integral_0^T IM(t) * P_surv(t) dt
+
+    where:
+        IM(t)        = projected Initial Margin at future time t
+        P_surv(t)    = our own survival probability (we stop paying IM if we default)
+        s_f          = funding spread (unsecured borrowing rate - OIS)
+
+    Regulations (UMR / BCBS-IOSCO) require banks to post ISDA SIMM IM into
+    segregated accounts. This cash earns OIS but is funded at the bank's
+    unsecured borrowing rate. The gap is the funding spread s_f, and
+    MVA is the present cost of that spread over the projected IM profile.
+
+    MVA is always positive (a cost). It is the primary reason XVA desks care
+    about SIMM IM — a large rate derivatives portfolio can carry hundreds of
+    millions in IM, generating significant ongoing MVA.
 
 Discretisation
 --------------
@@ -133,7 +151,7 @@ def survival_probability(
     cum_integral = np.zeros(n)
     for i in range(1, n):
         # Trapezoidal increment: integral from t_{i-1} to t_i
-        dt = time_grid[i] - time_grid[i - 1]
+        dt       = time_grid[i] - time_grid[i - 1]
         cum_integral[i] = cum_integral[i - 1] + 0.5 * (lambda_grid[i - 1] + lambda_grid[i]) * dt
     return np.exp(-cum_integral)
 
@@ -208,8 +226,8 @@ class CVAEngine:
         counterparty_hazard_rates: np.ndarray,
         recovery_rate: float = 0.40,
     ) -> None:
-        self.ee_profile    = np.asarray(ee_profile, dtype=float)
-        self.time_grid     = np.asarray(time_grid, dtype=float)
+        self.ee_profile   = np.asarray(ee_profile, dtype=float)
+        self.time_grid    = np.asarray(time_grid, dtype=float)
         self.recovery_rate = float(recovery_rate)
 
         # Build credit curves on simulation grid
@@ -489,17 +507,112 @@ class FVAEngine:
 
 
 # =============================================================================
+# MVA
+# =============================================================================
+
+class MVAEngine:
+    """
+    Margin Valuation Adjustment (MVA) calculator.
+
+    MVA is the cost of funding Initial Margin (IM) over the life of
+    the portfolio. Under UMR (Uncleared Margin Rules / BCBS-IOSCO),
+    banks must post ISDA SIMM IM into segregated third-party accounts.
+    The cash earns OIS but is funded at the bank's unsecured borrowing
+    rate — the gap is the funding spread s_f.
+
+        MVA = s_f * integral_0^T IM(t) * P_surv_b(t) dt
+
+    The own survival probability P_surv_b(t) appears because if the bank
+    defaults, it stops posting IM. Omitting it (setting P_surv_b = 1)
+    gives a slightly conservative upper bound and is common for internal
+    pricing.
+
+    MVA is always positive (a cost to us). For a large rates book posting
+    $500mm SIMM IM at a 50bp funding spread, MVA ≈ $2.5mm per year —
+    material enough that desks explicitly charge it to trades at inception.
+
+    Parameters
+    ----------
+    im_profile : np.ndarray, shape (n_steps+1,)
+        Projected IM at each simulation time step. Use
+        MarginEngine.im_profile() from margin.py to generate this.
+    time_grid : np.ndarray, shape (n_steps+1,)
+    funding_spread : float
+        s_f in decimal (e.g. 0.005 for 50 bps).
+    own_tenors : np.ndarray, optional
+        Tenor points for the bank's own survival probability curve.
+        If None, P_surv_b(t) = 1 (no own-default adjustment).
+    own_hazard_rates : np.ndarray, optional
+        Bank's own hazard rates at each tenor.
+    """
+
+    def __init__(
+        self,
+        im_profile      : np.ndarray,
+        time_grid       : np.ndarray,
+        funding_spread  : float,
+        own_tenors      : Optional[np.ndarray] = None,
+        own_hazard_rates: Optional[np.ndarray] = None,
+    ) -> None:
+        self.im_profile     = np.asarray(im_profile,  dtype=float)
+        self.time_grid      = np.asarray(time_grid,   dtype=float)
+        self.funding_spread = float(funding_spread)
+
+        if own_tenors is not None and own_hazard_rates is not None:
+            lambda_b      = build_hazard_rate_curve(own_tenors, own_hazard_rates, time_grid)
+            self.surv_b   = survival_probability(lambda_b, time_grid)
+        else:
+            # No own-default adjustment: P_surv_b(t) = 1 everywhere
+            self.surv_b   = np.ones_like(time_grid)
+
+    def compute(self) -> float:
+        """
+        Compute MVA.
+
+        Returns
+        -------
+        float
+            MVA (positive — a cost that reduces trade value at inception).
+
+        Formula
+        -------
+            MVA = s_f * integral_0^T IM(t) * P_surv_b(t) dt
+        """
+        integrand = self.im_profile * self.surv_b
+        return float(self.funding_spread * simpsons_integration(self.time_grid, integrand))
+
+    def term_structure(self) -> np.ndarray:
+        """
+        Cumulative MVA from 0 to each time step.
+
+        Useful for understanding how MVA accretes and for computing
+        the incremental MVA charge of a new trade (marginal MVA).
+
+        Returns
+        -------
+        np.ndarray, shape (n_steps+1,)
+        """
+        integrand  = self.im_profile * self.surv_b
+        n          = len(self.time_grid)
+        cumulative = np.zeros(n)
+        for i in range(1, n):
+            dt             = self.time_grid[i] - self.time_grid[i - 1]
+            cumulative[i]  = cumulative[i - 1] + 0.5 * (integrand[i - 1] + integrand[i]) * dt
+        return self.funding_spread * cumulative
+
+
+# =============================================================================
 # XVA AGGREGATOR
 # =============================================================================
 
 class XVAEngine:
     """
-    Unified XVA engine: computes CVA, DVA, and FVA for a netting set
+    Unified XVA engine: computes CVA, DVA, FVA, and MVA for a netting set
     and returns an XVA summary.
 
     This is the top-level interface consumed by notebooks and counterparty
-    risk reports. It wraps CVAEngine, DVAEngine, and FVAEngine and provides
-    a single compute() call returning all adjustments and their sum.
+    risk reports. It wraps CVAEngine, DVAEngine, FVAEngine, and MVAEngine and 
+    provides a single compute() call returning all adjustments and their sum.
 
     Parameters
     ----------
@@ -519,9 +632,12 @@ class XVAEngine:
     own_recovery : float
         Our own recovery rate. Default 0.40.
     funding_spread : float
-        Funding spread for FVA. Set to 0 to exclude FVA.
+        Funding spread for FVA and MVA. Set to 0 to exclude both.
     use_symmetric_fva : bool
         Whether to include FBA in FVA. Default True.
+    im_profile : np.ndarray, optional
+        Projected IM through time for MVA. Use MarginEngine.im_profile()
+        from margin.py. If None, MVA = 0.
     """
 
     def __init__(
@@ -537,6 +653,7 @@ class XVAEngine:
         own_recovery: float = 0.40,
         funding_spread: float = 0.0,
         use_symmetric_fva: bool = True,
+        im_profile: Optional[np.ndarray] = None,
     ) -> None:
         self.ee_profile  = np.asarray(ee_profile, dtype=float)
         self.ene_profile = np.asarray(ene_profile, dtype=float)
@@ -575,6 +692,18 @@ class XVAEngine:
         else:
             self.fva_engine = None
 
+        # MVA engine (optional — requires im_profile and funding_spread > 0)
+        if im_profile is not None and funding_spread > 0.0:
+            self.mva_engine = MVAEngine(
+                im_profile       = im_profile,
+                time_grid        = self.time_grid,
+                funding_spread   = funding_spread,
+                own_tenors       = own_tenors,
+                own_hazard_rates = own_hazard_rates,
+            )
+        else:
+            self.mva_engine = None
+
     def compute(self) -> dict:
         """
         Compute all XVA components and return a summary dictionary.
@@ -587,21 +716,27 @@ class XVAEngine:
             FVA         : float  — Funding valuation adjustment; 0 if funding_spread=0
             FCA         : float  — Funding cost component of FVA
             FBA         : float  — Funding benefit component of FVA; 0 if asymmetric
+            MVA         : float  — Margin valuation adjustment; 0 if im_profile not provided
             BCVA        : float  — Bilateral CVA = CVA + DVA
-            total_XVA   : float  — CVA + DVA + FVA (net XVA charge to trade value)
+            total_XVA   : float  — CVA + DVA + FVA + MVA (net XVA charge to trade value)
             CS01        : float  — CVA sensitivity to 1 bp CDS par spread shift
             HR01        : float  — CVA sensitivity to 1 bp hazard rate shift
             time_grid   : np.ndarray
             CVA_term_structure : np.ndarray — Cumulative CVA profile
+            MVA_term_structure : np.ndarray — Cumulative MVA profile; zeros if MVA=0
         """
         cva    = self.cva_engine.compute()
         dva    = self.dva_engine.compute() if self.dva_engine is not None else 0.0
-        fca    = self.fva_engine.fca()    if self.fva_engine is not None else 0.0
-        fba    = self.fva_engine.fba()    if self.fva_engine is not None else 0.0
+        fca    = self.fva_engine.fca()     if self.fva_engine is not None else 0.0
+        fba    = self.fva_engine.fba()     if self.fva_engine is not None else 0.0
         fva    = self.fva_engine.compute() if self.fva_engine is not None else 0.0
+        mva    = self.mva_engine.compute() if self.mva_engine is not None else 0.0
         cs01   = self.cva_engine.cs01()
         hr01   = self.cva_engine.hr01()
         cva_ts = self.cva_engine.term_structure()
+        mva_ts = (self.mva_engine.term_structure()
+                  if self.mva_engine is not None
+                  else np.zeros_like(self.time_grid))
 
         return {
             "CVA"               : cva,
@@ -609,12 +744,14 @@ class XVAEngine:
             "FVA"               : fva,
             "FCA"               : fca,
             "FBA"               : fba,
+            "MVA"               : mva,
             "BCVA"              : cva + dva,
-            "total_XVA"         : cva + dva + fva,
+            "total_XVA"         : cva + dva + fva + mva,
             "CS01"              : cs01,
             "HR01"              : hr01,
             "time_grid"         : self.time_grid,
             "CVA_term_structure": cva_ts,
+            "MVA_term_structure": mva_ts,
         }
 
     def sensitivity_table(self) -> dict:
@@ -625,6 +762,8 @@ class XVAEngine:
         -------
         dict with keys:
             CS01    : float — CVA sensitivity to counterparty spread (+1 bp)
+            HR01    : float — CVA sensitivity to counterparty hazard rate (+1 bp)
+            CS01_HR01_ratio : float — Ratio mapping (sanity check)
             IR_DV01 : str   — Placeholder note (IR DV01 requires bumping EE,
                               which requires a full MC re-run; see demo notebook)
         """
