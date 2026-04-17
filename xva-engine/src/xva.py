@@ -25,7 +25,6 @@ CVA (unilateral, continuous-time):
 
 DVA (unilateral):
     DVA = (1 - R_b) * integral_0^T ENE(t) * lambda_b(t) * P_surv_b(t) dt
-
     where ENE(t) = E[min(V_net(t), 0)] (negative expected exposure, our liability).
     DVA is always non-positive (a benefit to us).
 
