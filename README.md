@@ -4,9 +4,9 @@
 
 # Quant Desk Toolkit
 
-A professional-grade Python library for XVA pricing, counterparty credit risk
-modeling, and regulatory capital computation — built to reflect the analytical
-frameworks used on derivatives trading desks.
+A professional-grade Python library for derivatives pricing, counterparty
+exposure modeling, XVA analytics, and regulatory capital computation —
+built to reflect the analytical frameworks used on derivatives trading desks.
 
 ---
 
@@ -14,15 +14,18 @@ frameworks used on derivatives trading desks.
 
 This toolkit implements the core quantitative models underlying modern
 counterparty risk management and valuation adjustment pricing. It covers
-three interconnected domains:
+four interconnected domains:
 
+- **Derivatives Pricing** — Multi-curve OIS/SOFR curve construction,
+  interest rate swap and fixed income instrument valuation, and
+  interest rate Greeks via bump-and-reprice finite difference
 - **XVA Pricing** — CVA, DVA, and FVA computed from simulated exposure
   profiles and market-implied credit/funding curves
 - **Counterparty Exposure** — Monte Carlo simulation of Expected Exposure
   (EE), Expected Positive Exposure (EPE), and Potential Future Exposure
   (PFE) across netting sets, with and without collateral
-- **Regulatory Capital** — SA-CCR exposure-at-default (EAD) and
-  risk-weighted asset (RWA) calculations under Basel III
+- **Regulatory Capital** — SA-CCR exposure-at-default (EAD), SIMM/ISDA
+  initial margin, and risk-weighted asset (RWA) calculations under Basel III
 
 The implementation prioritizes numerical accuracy, modularity, and
 transparency of methodology — consistent with how these models are
@@ -31,15 +34,41 @@ built and validated in production trading environments.
 ---
 
 ## Architecture
-
-```
 quant-desk-toolkit/
-├── xva-engine/          # Core: XVA pricing and exposure simulation
-├── rates-analytics/     # Supporting: Curve construction and instrument pricing
-├── regulatory-capital/  # Regulatory: SA-CCR and RWA
-├── common-utils/        # Shared: Numerical methods and market data I/O
-└── tests/               # Unit tests for core pricing logic
-```
+│
+├── quant_desk/                  # Installable package
+│   ├── init.py
+│   ├── curve_factory.py         # Multi-curve OIS/SOFR bootstrapping
+│   ├── instruments.py           # IRS, bond, SFT pricing
+│   ├── simulator.py             # Hull-White Monte Carlo engine
+│   ├── exposure.py              # EPE/PFE/EE profiles
+│   ├── xva.py                   # CVA, DVA, FVA, MVA
+│   ├── margin.py                # SIMM/ISDA IM and variation margin
+│   ├── sa_ccr.py                # SA-CCR RC, PFE add-on, EAD
+│   ├── capital_rwa.py           # Basel III RWA and K-value
+│   ├── counterparty.py          # CDS bootstrapping, survival curves
+│   ├── greeks.py                # DV01, duration, convexity, CVA IR DV01
+│   └── common_utils/
+│       ├── init.py
+│       └── math_helpers.py      # Numerical integration, root-finding, MC variance reduction
+│
+├── notebooks/
+│   ├── 01_curves_and_instruments.ipynb
+│   ├── 02_monte_carlo.ipynb
+│   ├── 03_exposure_xva.ipynb
+│   ├── 04_sa_ccr_capital.ipynb
+│   ├── 05_margin_simm.ipynb
+│   └── 06_greeks.ipynb
+│
+├── scripts/
+│   └── run_pipeline.py          # End-to-end integration script
+│
+├── tests/
+│   └── test_*.py
+│
+├── requirements.txt
+├── setup.py
+└── README.md
 
 ---
 
@@ -72,113 +101,128 @@ potential future exposure add-on across asset classes.
 
 ## Modules
 
-### XVA Engine
-*The primary module — implements the full bilateral XVA pricing framework.*
+### `curve_factory`
+Multi-curve bootstrapping under an OIS/SOFR framework. Separates discount
+and projection curves with log-linear interpolation on discount factors and
+cubic spline interpolation on zero rates. Supports arbitrary tenor grids and
+market data inputs for SOFR swaps and OIS instruments.
 
-**Exposure Simulation** (`simulator.py`, `exposure.py`)
-- Hull-White one-factor model for interest rate path generation
-- GBM for equity/FX underlying simulation
-- Netting set aggregation with bilateral close-out
-- Expected Exposure (EE), EPE, and PFE term structures
+### `instruments`
+Fixed income instrument valuation under the multi-curve framework — interest
+rate swaps (IRS), fixed-rate bonds, FRAs, and securities financing transactions
+(SFTs). Computes fair value, accrued interest, par rate, and yield to maturity.
 
-**XVA Pricing** (`xva.py`)
-- CVA: Unilateral and bilateral, computed as discounted integral
-  of EPE against credit hazard rates
-- DVA: Own-default benefit using firm's CDS-implied survival probability
-- FVA: Funding cost/benefit from unsecured funding of variation margin
-  shortfalls, using OIS/internal funding spread
+### `simulator`
+Hull-White one-factor Monte Carlo simulation engine. Generates short rate paths
+under the risk-neutral measure for use in counterparty exposure and XVA pricing
+workflows. Supports antithetic variates and control variates for variance
+reduction.
 
-**Margin and Collateral** (`margin.py`)
-- ISDA SIMM delta sensitivity-based IM calculation
-- Variation margin (VM) mechanics with margin period of risk (MPoR)
-- Impact of collateral on exposure reduction
+### `exposure`
+Counterparty exposure analytics — Expected Positive Exposure (EPE), Potential
+Future Exposure (PFE), and Expected Exposure (EE) profiles across simulation
+paths and time horizons. Supports netting set aggregation with and without
+collateral.
 
-**Counterparty Module** (`counterparty.py`)
-- CDS spread bootstrapping to survival probability curves
-- Default probability term structure under flat and term hazard rates
-- Loss given default (LGD) parameterization
+### `xva`
+XVA pricing engine covering CVA, DVA, FVA, and MVA. Integrates with the
+exposure engine and curve environment for full valuation adjustment computation
+under a multi-curve OIS/SOFR framework. CVA and DVA computed as discounted
+integrals of EPE/ENE against credit hazard rates. FVA computed from asymmetric
+funding spread framework.
 
-**Key Notebooks**
-- `demo_xva_pricing.ipynb` — Incremental CVA/FVA pricing on a new
-  IRS trade added to an existing portfolio
-- `collateral_impact.ipynb` — Sensitivity of EPE/PFE to margin
-  frequency and MPoR assumptions
+### `margin`
+Initial margin and variation margin computation. Implements the ISDA SIMM
+delta sensitivity-based IM methodology across IR, FX, Credit, and Equity risk
+classes. Variation margin mechanics include margin period of risk (MPoR) and
+collateral threshold modeling.
 
----
+### `sa_ccr`
+SA-CCR (Standardised Approach for Counterparty Credit Risk) implementation
+per Basel III final rules. Computes Replacement Cost (RC) for margined and
+unmargined netting sets, PFE add-ons across IR, FX, Credit, and Equity asset
+classes, and Exposure at Default (EAD) with supervisory delta and maturity
+factor adjustments.
 
-### Rates Analytics
-*Underlying curve infrastructure and instrument pricing.*
+### `capital_rwa`
+Basel III regulatory capital and RWA calculation. Integrates SA-CCR EAD
+outputs with counterparty risk weights to produce capital requirements and
+K-value capital charges across derivatives portfolios.
 
-**Curve Construction** (`curve_factory.py`)
-- Multi-curve bootstrapping: OIS discounting with SOFR-linked
-  projection curves
-- Interpolation methods: log-linear on discount factors,
-  cubic spline on zero rates
+### `counterparty`
+Counterparty-level analytics — CDS spread bootstrapping to survival probability
+curves, default probability term structure under flat and term hazard rate
+assumptions, and LGD parameterization for use in CVA/DVA computation.
 
-**Instrument Pricing** (`instruments.py`)
-- Interest rate swap (IRS) valuation under multi-curve framework
-- Fixed income bond pricing with accrued interest
-- Securities financing transaction (SFT) cash flow modeling
+### `greeks`
+Interest rate sensitivities via bump-and-reprice finite difference — no
+closed-form shortcuts, so the framework extends cleanly to exotic payoffs.
+Covers parallel and bucketed DV01, modified duration, and convexity for
+interest rate swaps and fixed-rate bonds. Includes CVA IR DV01 via full Monte
+Carlo re-run at bumped curves, with both parallel and tenor-bucketed variants.
 
-**Sensitivities** (`greeks.py`)
-- Analytic DV01 and PV01 for swaps and bonds
-- Bucketed sensitivity across curve tenors
-
-**Key Notebooks**
-- `curve_construction.ipynb` — OIS/SOFR curve build with
-  swap pricing validation
-
----
-
-### Regulatory Capital
-*SA-CCR implementation for CCR capital computation.*
-
-The SA-CCR module provides transparency into the RWA impact of trades,
-enabling capital-efficient structuring of derivatives portfolios.
-
-**SA-CCR** (`sa_ccr.py`)
-- Replacement cost (RC) for margined and unmargined netting sets
-- PFE add-on calculation across asset classes:
-  IR, FX, Credit, Equity
-- EAD aggregation with supervisory delta and maturity factor
-
-**Capital and RWA** (`capital_rwa.py`)
-- RWA computation from SA-CCR EAD
-- K-value capital requirement
-
-**Key Notebooks**
-- `sa_ccr_walkthrough.ipynb` — Step-by-step SA-CCR calculation
-  on a mixed derivatives portfolio, validated against
-  Basel Committee published example portfolios
+### `common_utils/math_helpers`
+Shared numerical utilities — trapezoidal and Simpson's rule integration,
+Brent's method root-finding for implied rate and volatility solving, and Monte
+Carlo variance reduction methods (antithetic variates, control variates).
 
 ---
 
-### Common Utilities
+## Notebooks
 
-**Math Helpers** (`math_helpers.py`)
-- Numerical integration (trapezoidal, Simpson's rule)
-- Root-finding (Brent's method for implied vol/rate solving)
-- Monte Carlo variance reduction (antithetic variates,
-  control variates)
-
-**Data I/O** (`data_io.py`)
-- Market data ingestion from JSON, CSV, and SQL sources
-- Discount factor and hazard rate curve construction
-  from raw market inputs
+| Notebook | Description |
+|----------|-------------|
+| `01_curves_and_instruments` | OIS/SOFR curve bootstrapping, IRS and bond pricing, par rate validation |
+| `02_monte_carlo` | Hull-White simulation engine — rate path generation, calibration, and variance reduction |
+| `03_exposure_xva` | EPE/PFE profiles and full XVA pricing (CVA, DVA, FVA, MVA) with collateral impact |
+| `04_sa_ccr_capital` | SA-CCR EAD calculation and Basel III regulatory capital across a mixed derivatives portfolio |
+| `05_margin_simm` | ISDA SIMM initial margin and variation margin computation across risk classes |
+| `06_greeks` | DV01, bucketed sensitivities, modified duration, convexity, and CVA IR DV01 |
 
 ---
 
 ## Mathematical Framework
 
 | Component | Model / Method |
-|-----------|---------------|
+|-----------|----------------|
 | IR simulation | Hull-White one-factor |
-| Equity/FX simulation | Geometric Brownian Motion |
+| Curve construction | Multi-curve OIS/SOFR bootstrapping |
 | Exposure aggregation | Netting set with collateral threshold |
-| CVA/DVA | Hazard rate model, CDS-implied |
+| CVA / DVA | Hazard rate model, CDS-implied survival curve |
 | FVA | Asymmetric funding spread framework |
+| MVA | SIMM-based IM projection over simulation paths |
 | IM | ISDA SIMM delta sensitivity approach |
 | Regulatory EAD | Basel III SA-CCR |
+| Greeks | Bump-and-reprice finite difference |
+
+---
+
+## Usage
+
+```python
+from quant_desk.curve_factory import CurveFactory
+from quant_desk.instruments import InterestRateSwap
+from quant_desk.simulator import HullWhiteSimulator
+from quant_desk.exposure import ExposureEngine
+from quant_desk.xva import XVAEngine
+from quant_desk.greeks import irs_greek_summary
+
+# Bootstrap OIS/SOFR curves
+curves = CurveFactory.build(market_data)
+
+# Price an interest rate swap
+swap = InterestRateSwap(notional=10_000_000, fixed_rate=0.035, tenor=5)
+npv = swap.pv(curves.discount, curves.projection)["pv_net"]
+
+# Compute Greeks
+greeks = irs_greek_summary(swap, curves.discount, curves.projection)
+
+# Simulate exposure and compute XVA
+simulator = HullWhiteSimulator(curves, n_paths=5000)
+engine = ExposureEngine(simulator)
+xva = XVAEngine(engine, curves)
+print(f"CVA: {xva.cva():.0f}  FVA: {xva.fva():.0f}")
+```
 
 ---
 
@@ -195,6 +239,12 @@ enabling capital-efficient structuring of derivatives portfolios.
 ```bash
 git clone https://github.com/hyun-quant/quant-desk-toolkit.git
 cd quant-desk-toolkit
+pip install -e .
+```
+
+Or install dependencies directly:
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -206,6 +256,23 @@ pip install -r requirements.txt
 pytest tests/
 ```
 
-Core test coverage includes CVA calculation on known analytical
-solutions, SA-CCR EAD against published Basel Committee example
-portfolios, and curve bootstrapping consistency checks.
+Core test coverage includes CVA calculation on known analytical solutions,
+SA-CCR EAD against published Basel Committee example portfolios, and curve
+bootstrapping consistency checks.
+
+---
+
+## Background
+
+Built independently as a quantitative finance research and implementation
+project, with public release timed to support a return to institutional quant
+practice. The toolkit reflects hands-on implementation experience across
+derivatives pricing, counterparty risk, and regulatory capital — areas covered
+professionally across roles in sell-side risk management and financial risk
+advisory.
+
+---
+
+## License
+
+MIT
